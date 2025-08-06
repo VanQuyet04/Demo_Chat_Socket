@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Socket Demo</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Login/Register Modal -->
+    <div id="authModal" class="modal">
+        <div class="modal-content">
+            <div class="auth-tabs">
+                <button class="tab-btn active" onclick="switchTab('login')">Login</button>
+                <button class="tab-btn" onclick="switchTab('register')">Register</button>
+            </div>
+            
+            <div id="loginForm" class="auth-form">
+                <h2>Welcome Back!</h2>
+                <input type="text" id="loginUsername" placeholder="Username" required>
+                <input type="password" id="loginPassword" placeholder="Password" required>
+                <button onclick="login()">Login</button>
+            </div>
+            
+            <div id="registerForm" class="auth-form" style="display: none;">
+                <h2>Create Account</h2>
+                <input type="text" id="registerUsername" placeholder="Username" required>
+                <input type="password" id="registerPassword" placeholder="Password" required>
+                <button onclick="register()">Register</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Chat Interface -->
+    <div id="chatInterface" class="chat-container" style="display: none;">
+        <!-- Header -->
+        <div class="header">
+            <div class="user-info">
+                <span id="currentUser"></span>
+                <span class="online-indicator">●</span>
+            </div>
+            <button onclick="logout()" class="logout-btn">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Tabs -->
+            <div class="sidebar-tabs">
+                <button class="tab-btn active" onclick="switchChatTab('private')">
+                    <i class="fas fa-user"></i> Private
+                </button>
+                <button class="tab-btn" onclick="switchChatTab('group')">
+                    <i class="fas fa-users"></i> Groups
+                </button>
+            </div>
+
+            <!-- Private Chat List -->
+            <div id="privateChatList" class="chat-list">
+                <div class="list-header">
+                    <h3>Users</h3>
+                    <button onclick="refreshUsers()" class="refresh-btn">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+                <div id="usersList"></div>
+            </div>
+
+            <!-- Group Chat List -->
+            <div id="groupChatList" class="chat-list" style="display: none;">
+                <div class="list-header">
+                    <h3>Groups</h3>
+                    <button onclick="showCreateRoomModal()" class="create-btn">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                </div>
+                <div id="roomsList"></div>
+            </div>
+        </div>
+
+        <!-- Chat Area -->
+        <div class="chat-area">
+            <div id="noChatSelected" class="no-chat">
+                <i class="fas fa-comments"></i>
+                <h2>Select a chat to start messaging</h2>
+                <p>Choose a user for private chat or join a group</p>
+            </div>
+
+            <div id="chatWindow" class="chat-window" style="display: none;">
+                <!-- Chat Header -->
+                <div class="chat-header">
+                    <div class="chat-info">
+                        <h3 id="chatTitle"></h3>
+                        <span id="typingIndicator" class="typing-indicator" style="display: none;">
+                            <i class="fas fa-circle"></i> typing...
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Messages -->
+                <div class="messages-container">
+                    <div id="messagesList"></div>
+                </div>
+
+                <!-- Message Input -->
+                <div class="message-input">
+                    <input type="text" id="messageInput" placeholder="Type a message..." 
+                           onkeypress="handleKeyPress(event)" oninput="handleTyping()">
+                    <button onclick="sendMessage()" class="send-btn">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Room Modal -->
+    <div id="createRoomModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h2>Create New Group</h2>
+            <input type="text" id="roomName" placeholder="Group name" required>
+            <div class="modal-buttons">
+                <button onclick="createRoom()">Create</button>
+                <button onclick="hideCreateRoomModal()" class="cancel-btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html> 
