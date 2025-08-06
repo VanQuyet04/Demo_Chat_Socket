@@ -177,7 +177,7 @@ function connectSocket() {
     socket.on('typing_start', (data) => {
         if (currentChat && 
             ((currentChatType === 'private' && data.userId === currentChat.id) ||
-             (currentChatType === 'room' && currentChat.id === currentChat.id))) {
+             (currentChatType === 'room' && data.roomId === currentChat.id))) {
             showTypingIndicator(data.username);
         }
     });
@@ -185,7 +185,7 @@ function connectSocket() {
     socket.on('typing_stop', (data) => {
         if (currentChat && 
             ((currentChatType === 'private' && data.userId === currentChat.id) ||
-             (currentChatType === 'room' && currentChat.id === currentChat.id))) {
+             (currentChatType === 'room' && data.roomId === currentChat.id))) {
             hideTypingIndicator();
         }
     });
