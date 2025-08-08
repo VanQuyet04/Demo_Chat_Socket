@@ -26,8 +26,16 @@ const db = new sqlite3.Database('chat.db');
 
 // Create tables
 db.serialize(() => {
+  // Drop existing tables if they exist (for clean migration)
+  db.run(`DROP TABLE IF EXISTS message_reads`);
+  db.run(`DROP TABLE IF EXISTS conversation_participants`);
+  db.run(`DROP TABLE IF EXISTS room_members`);
+  db.run(`DROP TABLE IF EXISTS messages`);
+  db.run(`DROP TABLE IF EXISTS rooms`);
+  db.run(`DROP TABLE IF EXISTS users`);
+
   // Users table
-  db.run(`CREATE TABLE IF NOT EXISTS users (
+  db.run(`CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
@@ -35,10 +43,10 @@ db.serialize(() => {
   )`);
 
   // Messages table
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
+  db.run(`CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sender_id INTEGER NOT NULL,
-    receiver_id INTEGER,
+    conversation_id TEXT,
     room_id TEXT,
     content TEXT NOT NULL,
     message_type TEXT DEFAULT 'text',
@@ -48,7 +56,7 @@ db.serialize(() => {
   )`);
 
   // Rooms table
-  db.run(`CREATE TABLE IF NOT EXISTS rooms (
+  db.run(`CREATE TABLE rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     created_by INTEGER NOT NULL,
@@ -57,7 +65,7 @@ db.serialize(() => {
   )`);
 
   // Room members table
-  db.run(`CREATE TABLE IF NOT EXISTS room_members (
+  db.run(`CREATE TABLE room_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -66,8 +74,17 @@ db.serialize(() => {
     FOREIGN KEY (user_id) REFERENCES users (id)
   )`);
 
+  // Conversation participants table
+  db.run(`CREATE TABLE conversation_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id)
+  )`);
+
   // Message read receipts table
-  db.run(`CREATE TABLE IF NOT EXISTS message_reads (
+  db.run(`CREATE TABLE message_reads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -75,6 +92,8 @@ db.serialize(() => {
     FOREIGN KEY (message_id) REFERENCES messages (id),
     FOREIGN KEY (user_id) REFERENCES users (id)
   )`);
+
+  console.log('Database tables created successfully!');
 });
 
 // JWT Secret
@@ -193,21 +212,20 @@ app.get('/api/messages/:type/:id', (req, res) => {
   
   let query;
   if (type === 'private') {
-    // Fix: Get current user ID from query parameter
-    const currentUserId = req.query.currentUserId;
-    if (!currentUserId) {
-      return res.status(400).json({ error: 'Current user ID required' });
+    // Get conversation ID from query parameter
+    const conversationId = req.query.conversationId;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'Conversation ID required' });
     }
     
     query = `
       SELECT m.*, u.username as sender_name 
       FROM messages m 
       JOIN users u ON m.sender_id = u.id 
-      WHERE (m.sender_id = ? AND m.receiver_id = ?) 
-         OR (m.sender_id = ? AND m.receiver_id = ?)
+      WHERE m.conversation_id = ?
       ORDER BY m.created_at ASC
     `;
-    db.all(query, [currentUserId, id, id, currentUserId], (err, messages) => {
+    db.all(query, [conversationId], (err, messages) => {
       if (err) {
         return res.status(500).json({ error: 'Failed to fetch messages' });
       }
@@ -228,6 +246,41 @@ app.get('/api/messages/:type/:id', (req, res) => {
       res.json(messages);
     });
   }
+});
+
+// API để tạo hoặc lấy conversation
+app.post('/api/conversations', (req, res) => {
+  const { user1Id, user2Id } = req.body;
+  
+  // Tạo conversation ID (sắp xếp để đảm bảo unique)
+  const sortedIds = [user1Id, user2Id].sort();
+  const conversationId = `conv_${sortedIds[0]}_${sortedIds[1]}`;
+  
+  // Kiểm tra conversation đã tồn tại chưa
+  db.get('SELECT * FROM conversation_participants WHERE conversation_id = ? LIMIT 1', 
+    [conversationId], (err, existing) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Failed to create conversation' });
+    }
+    
+    if (!existing) {
+      // Tạo conversation mới
+      db.run('INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?), (?, ?)',
+        [conversationId, user1Id, conversationId, user2Id], function(err) {
+        if (err) {
+          console.error('Insert error:', err);
+          return res.status(500).json({ error: 'Failed to create conversation' });
+        }
+        console.log(`Created conversation: ${conversationId}`);
+        res.json({ conversationId, participants: [user1Id, user2Id] });
+      });
+    } else {
+      // Conversation đã tồn tại
+      console.log(`Using existing conversation: ${conversationId}`);
+      res.json({ conversationId, participants: [user1Id, user2Id] });
+    }
+  });
 });
 
 // Socket.io connection
@@ -259,11 +312,11 @@ io.on('connection', (socket) => {
   
   // Handle private message
   socket.on('private_message', (data) => {
-    const { receiverId, content } = data;
+    const { conversationId, content } = data;
     
     // Save to database
-    db.run('INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)',
-      [socket.userId, receiverId, content], function(err) {
+    db.run('INSERT INTO messages (sender_id, conversation_id, content) VALUES (?, ?, ?)',
+      [socket.userId, conversationId, content], function(err) {
       if (err) {
         console.error('Error saving message:', err);
         return;
@@ -272,18 +325,15 @@ io.on('connection', (socket) => {
       const message = {
         id: this.lastID,
         sender_id: socket.userId,
-        receiver_id: receiverId,
+        conversation_id: conversationId,
         content,
         sender_name: socket.username,
         status: 'sent',
         created_at: new Date().toISOString()
       };
       
-      // Send to receiver if online (use room for reliability)
-      io.to(`user_${receiverId}`).emit('private_message', message);
-      
-      // Send back to sender
-      socket.emit('private_message', message);
+      // Broadcast to conversation room
+      io.to(`conv_${conversationId}`).emit('private_message', message);
     });
   });
   
@@ -323,6 +373,13 @@ io.on('connection', (socket) => {
     db.run('INSERT OR IGNORE INTO room_members (room_id, user_id) VALUES (?, ?)',
       [roomId, socket.userId]);
   });
+
+  // Join conversation
+  socket.on('join_conversation', (data) => {
+    const { conversationId } = data;
+    socket.join(`conv_${conversationId}`);
+    console.log(`${socket.username} joined conversation ${conversationId}`);
+  });
   
   // Leave room
   socket.on('leave_room', (roomId) => {
@@ -333,13 +390,14 @@ io.on('connection', (socket) => {
   // Typing indicators
   socket.on('typing_start', (data) => {
     if (data.type === 'private') {
-      io.to(`user_${data.receiverId}`).emit('typing_start', {
-        userId: socket.userId,
+      // Gửi cho tất cả user khác trong conversation (không gửi cho chính mình)
+      socket.to(`conv_${data.conversationId}`).emit('typing_start', {
+        conversationId: data.conversationId,
         username: socket.username
       });
     } else if (data.type === 'room') {
       socket.to(`room_${data.roomId}`).emit('typing_start', {
-        userId: socket.userId,
+        roomId: data.roomId,
         username: socket.username
       });
     }
@@ -347,12 +405,13 @@ io.on('connection', (socket) => {
   
   socket.on('typing_stop', (data) => {
     if (data.type === 'private') {
-      io.to(`user_${data.receiverId}`).emit('typing_stop', {
-        userId: socket.userId
+      // Gửi cho tất cả user khác trong conversation (không gửi cho chính mình)
+      socket.to(`conv_${data.conversationId}`).emit('typing_stop', {
+        conversationId: data.conversationId
       });
     } else if (data.type === 'room') {
       socket.to(`room_${data.roomId}`).emit('typing_stop', {
-        userId: socket.userId
+        roomId: data.roomId
       });
     }
   });
@@ -361,8 +420,8 @@ io.on('connection', (socket) => {
   socket.on('message_seen', (data) => {
     console.log('Message seen event:', data);
     if (data.type === 'private') {
-      // Use room instead of socket ID for more reliable delivery
-      io.to(`user_${data.senderId}`).emit('message_seen', {
+      // Broadcast to conversation room
+      io.to(`conv_${data.conversationId}`).emit('message_seen', {
         messageId: data.messageId,
         seenBy: socket.userId,
         seenByUsername: socket.username

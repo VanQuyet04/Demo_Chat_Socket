@@ -3,6 +3,7 @@ let socket;
 let currentUser = null;
 let currentChat = null;
 let currentChatType = null; // 'private' or 'room'
+let currentConversationId = null; // Track current conversation
 let typingTimeout = null;
 let onlineUsers = new Set(); // Track online users
 
@@ -158,12 +159,10 @@ function connectSocket() {
     
     socket.on('private_message', (message) => {
         console.log('Received private message:', message);
-        console.log('Current chat:', currentChat);
-        console.log('Current chat type:', currentChatType);
+        console.log('Current conversation:', currentConversationId);
         
         if (currentChat && currentChatType === 'private' && 
-            ((message.sender_id === currentChat.id && message.receiver_id === currentUser.id) || 
-             (message.sender_id === currentUser.id && message.receiver_id === currentChat.id))) {
+            message.conversation_id === currentConversationId) {
             displayMessage(message);
         }
     });
@@ -176,7 +175,7 @@ function connectSocket() {
     
     socket.on('typing_start', (data) => {
         if (currentChat && 
-            ((currentChatType === 'private' && data.userId === currentChat.id) ||
+            ((currentChatType === 'private' && data.conversationId === currentConversationId) ||
              (currentChatType === 'room' && data.roomId === currentChat.id))) {
             showTypingIndicator(data.username);
         }
@@ -184,7 +183,7 @@ function connectSocket() {
     
     socket.on('typing_stop', (data) => {
         if (currentChat && 
-            ((currentChatType === 'private' && data.userId === currentChat.id) ||
+            ((currentChatType === 'private' && data.conversationId === currentConversationId) ||
              (currentChatType === 'room' && data.roomId === currentChat.id))) {
             hideTypingIndicator();
         }
@@ -298,7 +297,7 @@ function createRoomItem(room) {
     return roomItem;
 }
 
-function selectUser(user) {
+async function selectUser(user) {
     // Remove active class from all items
     document.querySelectorAll('.user-item, .room-item').forEach(item => {
         item.classList.remove('active');
@@ -311,11 +310,32 @@ function selectUser(user) {
     currentChatType = 'private';
     chatTitle.textContent = user.username;
     
-    showChatWindow();
-    loadMessages('private', user.id);
-    
-    // Join user's personal room for private messages
-    socket.emit('join_room', `user_${user.id}`);
+    // Create or get conversation
+    try {
+        const response = await fetch('/api/conversations', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                user1Id: currentUser.id,
+                user2Id: user.id
+            })
+        });
+        
+        const conversation = await response.json();
+        currentConversationId = conversation.conversationId;
+        
+        // Join conversation room
+        socket.emit('join_conversation', {
+            conversationId: currentConversationId
+        });
+        
+        showChatWindow();
+        loadMessages('private', user.id);
+    } catch (error) {
+        console.error('Failed to create conversation:', error);
+    }
 }
 
 function selectRoom(room) {
@@ -342,7 +362,11 @@ async function loadMessages(type, id) {
     try {
         let url = `/api/messages/${type}/${id}`;
         if (type === 'private') {
-            url += `?currentUserId=${currentUser.id}`;
+            if (!currentConversationId) {
+                console.error('No conversation ID available');
+                return;
+            }
+            url += `?conversationId=${currentConversationId}`;
         }
         
         const response = await fetch(url);
@@ -396,8 +420,12 @@ function sendMessage() {
     if (!content || !currentChat) return;
     
     if (currentChatType === 'private') {
+        if (!currentConversationId) {
+            console.error('No conversation ID available');
+            return;
+        }
         socket.emit('private_message', {
-            receiverId: currentChat.id,
+            conversationId: currentConversationId,
             content: content
         });
     } else if (currentChatType === 'room') {
@@ -427,9 +455,10 @@ function handleTyping() {
     
     // Emit typing start
     if (currentChatType === 'private') {
+        if (!currentConversationId) return;
         socket.emit('typing_start', {
             type: 'private',
-            receiverId: currentChat.id
+            conversationId: currentConversationId
         });
     } else if (currentChatType === 'room') {
         socket.emit('typing_start', {
@@ -441,9 +470,10 @@ function handleTyping() {
     // Set timeout to stop typing indicator
     typingTimeout = setTimeout(() => {
         if (currentChatType === 'private') {
+            if (!currentConversationId) return;
             socket.emit('typing_stop', {
                 type: 'private',
-                receiverId: currentChat.id
+                conversationId: currentConversationId
             });
         } else if (currentChatType === 'room') {
             socket.emit('typing_stop', {
@@ -583,10 +613,11 @@ function markMessageAsSeen(messageId) {
     
     // Send seen notification to server
     if (currentChatType === 'private') {
+        if (!currentConversationId) return;
         socket.emit('message_seen', {
             type: 'private',
             messageId: messageId,
-            senderId: currentChat.id
+            conversationId: currentConversationId
         });
         console.log('Sent message_seen for private chat');
     } else if (currentChatType === 'room') {
